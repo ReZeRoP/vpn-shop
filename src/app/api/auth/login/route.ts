@@ -34,10 +34,14 @@ export async function POST(req: NextRequest) {
   attempts.delete(ip);
   const { token, expiresAt } = createSession(user.id);
   const res = NextResponse.json({ ok: true, role: user.role });
+  // Secure flag must follow the ACTUAL protocol — a hardcoded
+  // production check breaks login on plain-HTTP deployments (cookie dropped).
+  const isHttps =
+    req.headers.get("x-forwarded-proto") === "https" || req.nextUrl.protocol === "https:";
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isHttps,
     expires: new Date(expiresAt),
     path: "/",
   });

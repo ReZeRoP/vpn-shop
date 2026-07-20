@@ -36,10 +36,13 @@ export async function POST(req: NextRequest) {
 
   const { token, expiresAt } = createSession(user.id);
   const res = NextResponse.json({ ok: true });
+  // Secure flag must follow the ACTUAL protocol (see login route).
+  const isHttps =
+    req.headers.get("x-forwarded-proto") === "https" || req.nextUrl.protocol === "https:";
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isHttps,
     expires: new Date(expiresAt),
     path: "/",
   });

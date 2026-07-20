@@ -53,7 +53,15 @@ export default async function DashboardPage() {
             <h1 className="text-2xl font-bold">پنل کاربری</h1>
             <p className="mt-1 text-sm text-muted">{user.username}</p>
           </div>
-          <LogoutButton />
+          <div className="flex items-center gap-3">
+            <Link
+              href="/profile"
+              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-sm hover:bg-panel-2"
+            >
+              حساب کاربری
+            </Link>
+            <LogoutButton />
+          </div>
         </div>
 
         {orders.length === 0 ? (
@@ -108,9 +116,14 @@ export default async function DashboardPage() {
                         {o.expiresAt && (
                           <span className="text-muted">انقضا: {jalaliDate(o.expiresAt)}</span>
                         )}
-                        <Link href={`/order/${o.publicId}`} className="text-accent hover:underline">
-                          مشاهده کانفیگ ←
-                        </Link>
+                        <div className="flex items-center gap-4">
+                          <Link href={`/renew/${o.publicId}`} className="text-accent hover:underline">
+                            تمدید
+                          </Link>
+                          <Link href={`/order/${o.publicId}`} className="text-accent hover:underline">
+                            مشاهده کانفیگ ←
+                          </Link>
+                        </div>
                       </div>
                     </>
                   )}
@@ -121,6 +134,14 @@ export default async function DashboardPage() {
                       className="mt-3 inline-block text-sm text-accent hover:underline"
                     >
                       ادامه پرداخت ←
+                    </Link>
+                  )}
+                  {o.status === "expired" && (
+                    <Link
+                      href={`/renew/${o.publicId}`}
+                      className="mt-3 inline-block text-sm text-accent hover:underline"
+                    >
+                      تمدید سرویس ←
                     </Link>
                   )}
                   {o.status === "revoked" && o.revokeReason && (

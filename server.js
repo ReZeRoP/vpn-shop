@@ -151,6 +151,29 @@ app.prepare().then(() => {
     });
   });
 
+  // ── maintenance: expire unpaid orders + purge stale sessions ──
+  const paymentWindowStmt = db.prepare("SELECT value FROM settings WHERE key = 'payment_window_min'");
+  const expireOrdersStmt = db.prepare(
+    "UPDATE orders SET status = 'expired' WHERE status = 'pending_payment' AND created_at < ?",
+  );
+  const purgeSessionsStmt = db.prepare("DELETE FROM sessions WHERE expires_at < ?");
+
+  function maintenanceTick() {
+    try {
+      // read the window every tick so admin changes apply without a restart
+      const row = paymentWindowStmt.get();
+      const minutes = parseInt(row?.value, 10);
+      const windowMs = (Number.isFinite(minutes) && minutes > 0 ? minutes : 45) * 60_000;
+      const expired = expireOrdersStmt.run(Date.now() - windowMs);
+      if (expired.changes > 0) console.log(`maintenance: expired ${expired.changes} unpaid order(s)`);
+      purgeSessionsStmt.run(Date.now());
+    } catch (e) {
+      console.warn("maintenance tick failed:", e.message);
+    }
+  }
+  maintenanceTick();
+  setInterval(maintenanceTick, 10 * 60_000).unref();
+
   httpServer.listen(port, hostname, () => {
     console.log(`> Ready on http://${hostname}:${port} (${dev ? "dev" : "prod"})`);
   });
