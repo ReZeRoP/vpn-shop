@@ -10,6 +10,7 @@ export const SETTING_KEYS = {
   panelUrl: "panel_url", // https://host:port/basePath
   panelUser: "panel_user",
   panelPass: "panel_pass",
+  panelToken: "panel_token", // v3 API token (alternative to user/pass)
   panelInsecureTls: "panel_insecure_tls", // "1" | "0"
   subBase: "sub_base", // https://host:2096/sub
   publicHost: "public_host", // public address used in vless:// links
@@ -40,6 +41,7 @@ function envFallback(key: string): string | undefined {
     [SETTING_KEYS.panelUrl]: process.env.XUI_PANEL_URL,
     [SETTING_KEYS.panelUser]: process.env.XUI_PANEL_USER,
     [SETTING_KEYS.panelPass]: process.env.XUI_PANEL_PASS,
+    [SETTING_KEYS.panelToken]: process.env.XUI_PANEL_TOKEN,
     [SETTING_KEYS.panelInsecureTls]: process.env.XUI_INSECURE_TLS,
     [SETTING_KEYS.subBase]: process.env.XUI_SUB_BASE,
     [SETTING_KEYS.publicHost]: process.env.XUI_PUBLIC_HOST,

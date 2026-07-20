@@ -17,6 +17,8 @@ export interface XuiConfig {
   password: string;
   /** allow self-signed panel certs */
   insecureTls?: boolean;
+  /** v3 API token — when set, login/cookies are skipped and Authorization: Bearer is sent */
+  token?: string;
 }
 
 export interface XuiClient {
@@ -98,7 +100,9 @@ class Mutex {
 }
 
 export class XuiApi {
-  private cookie: string | null = null;
+  /** Cookie jar: v3 panels set both a csrf cookie and the session cookie — keep them all */
+  private cookies = new Map<string, string>();
+  private csrfToken: string | null = null;
   private loginPromise: Promise<void> | null = null;
   private writeMutex = new Mutex();
   private dispatcher?: Agent;
@@ -113,38 +117,89 @@ export class XuiApi {
     return this.cfg.baseUrl.replace(/\/+$/, "") + p;
   }
 
+  /** Absorb every Set-Cookie header into the jar (name=value before the first ";"). */
+  private absorbCookies(res: { headers: { getSetCookie?: () => string[] } }): void {
+    for (const raw of res.headers.getSetCookie?.() ?? []) {
+      const pair = raw.split(";")[0];
+      const eq = pair.indexOf("=");
+      if (eq > 0) this.cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  }
+
   private async rawFetch(p: string, init: { method?: string; body?: unknown } = {}) {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (this.cookie) headers.Cookie = this.cookie;
+    const method = init.method ?? "GET";
+    // browser-like headers: some panels sit behind WAF/CDN that rejects bare clients
+    const origin = new URL(this.cfg.baseUrl).origin;
+    const headers: Record<string, string> = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      Accept: "application/json, text/plain, */*",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: origin,
+      Referer: origin + "/",
+    };
+    if (this.cfg.token) {
+      headers.Authorization = `Bearer ${this.cfg.token}`;
+    } else if (this.cookies.size) {
+      headers.Cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; ");
+    }
+    if (method !== "GET" && this.csrfToken) headers["X-CSRF-Token"] = this.csrfToken;
     let body: string | undefined;
     if (init.body !== undefined) {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(init.body);
     }
-    return undiciFetch(this.url(p), {
-      method: init.method ?? "GET",
+    const res = await undiciFetch(this.url(p), {
+      method,
       headers,
       body,
       dispatcher: this.dispatcher,
     });
+    if (!this.cfg.token) this.absorbCookies(res);
+    return res;
+  }
+
+  /**
+   * v3 CSRF flow: GET {base}/csrf-token sets a csrf cookie and returns the token
+   * (as {"success":true,"obj":"<token>"}, {token:"..."} or plain text — handle all).
+   */
+  private async ensureCsrf(): Promise<void> {
+    const res = await this.rawFetch("/csrf-token");
+    if (res.status !== 200) return;
+    const text = await res.text();
+    let token = text.trim();
+    try {
+      const data = JSON.parse(text) as { obj?: unknown; token?: unknown };
+      if (typeof data?.obj === "string") token = data.obj;
+      else if (typeof data?.token === "string") token = data.token;
+    } catch {
+      // plain-text token — use as-is
+    }
+    if (token) this.csrfToken = token;
   }
 
   private async login(): Promise<void> {
     // dedupe concurrent login attempts
     if (this.loginPromise) return this.loginPromise;
     this.loginPromise = (async () => {
-      const res = await this.rawFetch("/login", {
-        method: "POST",
-        body: { username: this.cfg.username, password: this.cfg.password },
-      });
-      const setCookie = res.headers.getSetCookie?.() ?? [];
+      const credentials = { username: this.cfg.username, password: this.cfg.password };
+      let res = await this.rawFetch("/login", { method: "POST", body: credentials });
+      if (res.status === 403) {
+        // v3 CSRF protection: fetch the token + csrf cookie, then retry once
+        await this.ensureCsrf();
+        res = await this.rawFetch("/login", { method: "POST", body: credentials });
+        if (res.status === 403) {
+          throw new XuiError(
+            "پنل با کد 403 پاسخ داد — احتمالاً فایروال/CDN جلوی درخواست را می‌گیرد یا IP سرور سایت در پنل مجاز نیست. آدرس پنل و دسترسی IP سرور را بررسی کنید.",
+            403,
+          );
+        }
+      }
       const data = (await res.json().catch(() => null)) as ApiEnvelope<unknown> | null;
       if (!data?.success) {
         throw new XuiError(`ورود به پنل ناموفق: ${data?.msg ?? res.status}`, res.status);
       }
-      const session = setCookie.find((c) => c.startsWith("3x-ui=")) ?? setCookie[0];
-      if (!session) throw new XuiError("پنل کوکی نشست برنگرداند");
-      this.cookie = session.split(";")[0];
+      if (!this.cookies.size) throw new XuiError("پنل کوکی نشست برنگرداند");
     })();
     try {
       await this.loginPromise;
@@ -155,14 +210,25 @@ export class XuiApi {
 
   /**
    * Authenticated request with automatic re-login.
-   * 3x-ui returns 404 (deliberately) or 401 when the session is invalid,
-   * and 200 with {success:false} for logical errors.
+   * 3x-ui returns 404 (deliberately), 401, or 403 (v3 csrf/session) when the
+   * session is invalid, and 200 with {success:false} for logical errors.
    */
   private async request<T>(p: string, init: { method?: string; body?: unknown } = {}, retried = false): Promise<T> {
-    if (!this.cookie) await this.login();
+    if (this.cfg.token) {
+      const res = await this.rawFetch(p, init);
+      if (res.status === 401 || res.status === 403) {
+        throw new XuiError("توکن API پنل نامعتبر است", res.status);
+      }
+      if (!res.ok) throw new XuiError(`خطای پنل: HTTP ${res.status} در ${p}`, res.status);
+      const data = (await res.json()) as ApiEnvelope<T>;
+      if (!data.success) throw new XuiError(`خطای پنل: ${data.msg}`);
+      return data.obj;
+    }
+    if (!this.cookies.size) await this.login();
     const res = await this.rawFetch(p, init);
-    if ((res.status === 404 || res.status === 401) && !retried) {
-      this.cookie = null;
+    if ((res.status === 404 || res.status === 401 || res.status === 403) && !retried) {
+      this.cookies.clear();
+      this.csrfToken = null;
       await this.login();
       return this.request<T>(p, init, true);
     }

@@ -1,12 +1,21 @@
 // Mock 3x-ui panel for local E2E testing.
 // Reproduces v2 API quirks: cookie login, {success,msg,obj} envelope,
 // settings as JSON-encoded string, 404 when unauthenticated.
+//
+// Modes (env):
+//   (default)      v2 panel: plain cookie login.
+//   MOCK_V3=1      v3 panel: POST /login returns 403 unless X-CSRF-Token
+//                  (from GET /csrf-token) is present. Exercises the CSRF flow.
+//   MOCK_TOKEN=xyz accept Authorization: Bearer xyz on any request (v3 API token).
 // Usage: node scripts/mock-panel.mjs   (listens on :20530, base path /mock)
 import { createServer } from "http";
 
 const BASE = "/mock";
+const V3 = process.env.MOCK_V3 === "1";
+const API_TOKEN = process.env.MOCK_TOKEN || "";
 let sessionCounter = 0;
 const sessions = new Set();
+const csrfTokens = new Set();
 
 const inbound = {
   id: 1,
@@ -53,6 +62,11 @@ function readBody(req) {
 }
 
 function authed(req) {
+  // v3 API token bypasses cookies entirely.
+  if (API_TOKEN) {
+    const auth = req.headers.authorization || "";
+    if (auth === `Bearer ${API_TOKEN}`) return true;
+  }
   const cookie = req.headers.cookie || "";
   const m = /3x-ui=([^;]+)/.exec(cookie);
   return m && sessions.has(m[1]);
@@ -62,7 +76,28 @@ createServer(async (req, res) => {
   const url = req.url || "";
   console.log(`[mock-panel] ${req.method} ${url}`);
 
+  // v3 CSRF token issuer
+  if (url === `${BASE}/csrf-token`) {
+    const token = `csrf${++sessionCounter}`;
+    csrfTokens.add(token);
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Set-Cookie": `x-csrf-token=${token}; Path=${BASE}; HttpOnly`,
+    });
+    res.end(JSON.stringify({ success: true, msg: "", obj: token }));
+    return;
+  }
+
   if (url === `${BASE}/login` && req.method === "POST") {
+    // v3: reject login that arrives without a valid CSRF token.
+    if (V3) {
+      const csrf = req.headers["x-csrf-token"];
+      if (!csrf || !csrfTokens.has(String(csrf))) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, msg: "CSRF token missing", obj: null }));
+        return;
+      }
+    }
     const body = await readBody(req);
     if (body.username === "admin" && body.password === "admin") {
       const token = `sess${++sessionCounter}`;
