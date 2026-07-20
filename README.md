@@ -42,7 +42,7 @@ No Redis, no Postgres, no external services — everything runs in one Node proc
 ## Quick install (Ubuntu/Debian VPS)
 
 ```bash
-git clone https://github.com/YOUR_USER/vpn-shop.git
+git clone https://github.com/ReZeRoP/vpn-shop.git
 cd vpn-shop
 bash install.sh
 ```

@@ -7,7 +7,7 @@
 ## نصب سریع (یک دستور)
 
 ```bash
-git clone https://github.com/YOUR_USER/vpn-shop.git
+git clone https://github.com/ReZeRoP/vpn-shop.git
 cd vpn-shop
 bash install.sh
 ```
