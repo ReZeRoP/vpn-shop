@@ -1,65 +1,157 @@
-import Image from "next/image";
+import Link from "next/link";
+import Navbar from "@/components/Navbar";
+import { db, tables } from "@/db";
+import { eq, asc } from "drizzle-orm";
+import { toman, gbLabel, faInt } from "@/lib/format";
+import { getSetting, SETTING_KEYS } from "@/lib/settings";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+const FEATURES = [
+  { icon: "⚡", title: "تحویل آنی", desc: "بلافاصله بعد از ثبت رسید، کانفیگ شما فعال و تحویل داده می‌شود" },
+  { icon: "🌍", title: "سرورهای پرسرعت", desc: "اتصال پایدار روی همه اپراتورها؛ همراه اول، ایرانسل و مخابرات" },
+  { icon: "📱", title: "همه دستگاه‌ها", desc: "اندروید، آیفون، ویندوز و مک — با لینک اشتراک یک‌بار اضافه کنید" },
+  { icon: "💬", title: "گفتگوی زنده", desc: "سوال دارید؟ در چت عمومی سایت از ما و بقیه کاربران بپرسید" },
+];
+
+export default async function HomePage() {
+  const plans = db
+    .select()
+    .from(tables.plans)
+    .where(eq(tables.plans.active, true))
+    .orderBy(asc(tables.plans.sortOrder), asc(tables.plans.priceToman))
+    .all();
+  const tg = getSetting(SETTING_KEYS.telegramSupport);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <>
+      <Navbar />
+      <main className="flex-1">
+        {/* Hero */}
+        <section className="mx-auto max-w-5xl px-4 pb-12 pt-20 text-center">
+          <h1 className="mx-auto max-w-2xl text-4xl font-extrabold leading-tight sm:text-5xl">
+            اینترنت <span className="text-accent">آزاد</span> و پرسرعت،
+            <br />
+            در چند ثانیه
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="mx-auto mt-5 max-w-xl text-muted">
+            خرید کانفیگ اختصاصی V2Ray با تحویل فوری. پرداخت کارت به کارت، فعال‌سازی آنی،
+            مدیریت مصرف در پنل کاربری.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+          <div className="mt-8 flex items-center justify-center gap-3">
+            <a
+              href="#plans"
+              className="rounded-xl bg-accent px-6 py-3 font-medium text-white transition hover:bg-accent-hover"
+            >
+              مشاهده سرویس‌ها
+            </a>
+            <Link
+              href="/chat"
+              className="rounded-xl border border-line bg-panel px-6 py-3 font-medium text-fg transition hover:bg-panel-2"
+            >
+              گفتگوی عمومی
+            </Link>
+          </div>
+        </section>
+
+        {/* Plans */}
+        <section id="plans" className="mx-auto max-w-5xl scroll-mt-20 px-4 py-12">
+          <h2 className="mb-8 text-center text-2xl font-bold">سرویس‌ها</h2>
+          {plans.length === 0 ? (
+            <p className="rounded-card border border-line bg-panel p-8 text-center text-muted">
+              هنوز پلنی ثبت نشده — از پنل مدیریت اضافه کنید
+            </p>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {plans.map((p) => (
+                <div
+                  key={p.id}
+                  className="group flex flex-col rounded-card border border-line bg-panel p-6 transition hover:border-accent/50 hover:bg-panel-2"
+                >
+                  <h3 className="text-lg font-bold">{p.name}</h3>
+                  {p.description && <p className="mt-1 text-sm text-muted">{p.description}</p>}
+                  <ul className="mt-4 space-y-2 text-sm text-muted">
+                    <li className="flex items-center gap-2">
+                      <span className="text-ok">✓</span> حجم {gbLabel(p.gb)}
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-ok">✓</span> مدت {faInt(p.days)} روز
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-ok">✓</span>{" "}
+                      {p.limitIp <= 0 ? "کاربر نامحدود" : `${faInt(p.limitIp)} کاربر همزمان`}
+                    </li>
+                  </ul>
+                  <div className="mt-6 flex items-end justify-between">
+                    <span className="text-xl font-bold text-ok">{toman(p.priceToman)}</span>
+                  </div>
+                  <Link
+                    href={`/checkout/${p.id}`}
+                    className="mt-4 rounded-xl bg-accent py-2.5 text-center font-medium text-white transition group-hover:bg-accent-hover"
+                  >
+                    خرید
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Features */}
+        <section className="mx-auto max-w-5xl px-4 py-12">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {FEATURES.map((f) => (
+              <div key={f.title} className="rounded-card border border-line bg-panel p-5">
+                <div className="text-2xl">{f.icon}</div>
+                <h3 className="mt-3 font-bold">{f.title}</h3>
+                <p className="mt-1.5 text-sm leading-6 text-muted">{f.desc}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="mx-auto max-w-3xl px-4 py-12">
+          <h2 className="mb-6 text-center text-2xl font-bold">سوالات متداول</h2>
+          <div className="space-y-3">
+            {[
+              {
+                q: "بعد از پرداخت چقدر طول می‌کشد سرویس فعال شود؟",
+                a: "بلافاصله! به محض ثبت رسید کارت به کارت، کانفیگ شما ساخته و لینک اشتراک تحویل داده می‌شود.",
+              },
+              {
+                q: "چطور کانفیگ را به گوشی اضافه کنم؟",
+                a: "لینک اشتراک را کپی کنید و در برنامه‌هایی مثل v2rayNG (اندروید) یا Streisand (آیفون) وارد کنید. آموزش کامل در بخش «آموزش اتصال» موجود است.",
+              },
+              {
+                q: "اگر رسید نامعتبر ثبت شود چه می‌شود؟",
+                a: "رسیدها توسط مدیر بررسی می‌شوند؛ در صورت جعلی بودن رسید، سرویس غیرفعال خواهد شد.",
+              },
+              {
+                q: "مصرف و اعتبار سرویسم را از کجا ببینم؟",
+                a: "در پنل کاربری، میزان مصرف، حجم باقیمانده و تاریخ انقضای هر سرویس نمایش داده می‌شود.",
+              },
+            ].map((item) => (
+              <details key={item.q} className="group rounded-card border border-line bg-panel p-4">
+                <summary className="cursor-pointer list-none font-medium">{item.q}</summary>
+                <p className="mt-3 text-sm leading-7 text-muted">{item.a}</p>
+              </details>
+            ))}
+          </div>
+        </section>
+
+        <footer className="border-t border-line py-8 text-center text-sm text-muted">
+          {tg && (
+            <p className="mb-2">
+              پشتیبانی تلگرام:{" "}
+              <a href={tg} className="text-accent hover:underline" target="_blank">
+                {tg.replace(/^https?:\/\//, "")}
+              </a>
+            </p>
+          )}
+          © فروشگاه کانفیگ
+        </footer>
       </main>
-    </div>
+    </>
   );
 }

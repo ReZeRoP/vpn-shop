@@ -1,26 +1,53 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ─── Design tokens: dark, minimal, slightly warm ─── */
+@theme {
+  --font-sans: var(--font-vazirmatn), ui-sans-serif, system-ui, sans-serif;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* surfaces */
+  --color-surface: #0b0e14; /* page background */
+  --color-panel: #11151f; /* cards */
+  --color-panel-2: #171c29; /* raised cards / hover */
+  --color-line: #232a3b; /* borders */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* text */
+  --color-fg: #e7eaf2;
+  --color-muted: #8b93a7;
+
+  /* brand */
+  --color-accent: #5b8cff; /* primary blue */
+  --color-accent-hover: #7ba3ff;
+  --color-ok: #34d399; /* success green (price, remaining) */
+  --color-warn: #fbbf24; /* highlights, expiry */
+  --color-danger: #f87171;
+
+  --radius-card: 1rem;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* subtle top glow, keeps the page from feeling flat */
+  background-image: radial-gradient(
+    60rem 30rem at 50% -10rem,
+    rgb(91 140 255 / 0.08),
+    transparent
+  );
+}
+
+/* Persian digits for numeric content is handled via Intl in JS.
+   Keep latin digits monospace-friendly where used (card numbers). */
+.ltr {
+  direction: ltr;
+}
+
+::selection {
+  background: rgb(91 140 255 / 0.35);
+}
+
+/* thin scrollbars for chat */
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 3px;
 }
