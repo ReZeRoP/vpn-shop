@@ -11,6 +11,7 @@ export default function AdminSettingsPage() {
     panel_url: getSetting(SETTING_KEYS.panelUrl),
     panel_user: getSetting(SETTING_KEYS.panelUser),
     panel_pass: getSetting(SETTING_KEYS.panelPass),
+    panel_token: getSetting(SETTING_KEYS.panelToken),
     panel_insecure_tls: getSetting(SETTING_KEYS.panelInsecureTls),
     sub_base: getSetting(SETTING_KEYS.subBase),
     public_host: getSetting(SETTING_KEYS.publicHost),

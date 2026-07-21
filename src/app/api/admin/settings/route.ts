@@ -8,6 +8,7 @@ const ALLOWED_KEYS = new Set([
   "panel_url",
   "panel_user",
   "panel_pass",
+  "panel_token",
   "panel_insecure_tls",
   "sub_base",
   "public_host",
