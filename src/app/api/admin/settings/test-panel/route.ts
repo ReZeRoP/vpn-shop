@@ -110,6 +110,17 @@ async function checkLogin(steps: Step[]): Promise<void> {
           : `${inbounds.length} اینباند: ` +
             inbounds.map((i) => `#${i.id} ${i.remark} (${i.protocol}:${i.port})`).join("، "),
     });
+    // Detect which client API the panel exposes — newer builds moved client
+    // management to /panel/api/clients/* and dropped the old addClient route.
+    const flavor = await getXui().whichClientApi();
+    steps.push({
+      step: "نسخه API کلاینت",
+      ok: true,
+      detail:
+        flavor === "clients"
+          ? "پنل جدید — کلاینت‌ها از مسیر /panel/api/clients مدیریت می‌شوند"
+          : "پنل قدیمی — کلاینت‌ها از مسیر /panel/api/inbounds مدیریت می‌شوند",
+    });
   } catch (e) {
     const err = e as Error;
     const status = e instanceof XuiError ? e.status : undefined;

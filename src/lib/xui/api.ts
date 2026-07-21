@@ -1,12 +1,18 @@
 // ─── 3x-ui panel API client ──────────────────────────────────────────────────
-// Targets the v2.x API (/panel/api/inbounds/...) which also works on v3 panels.
+// Supports BOTH client APIs (auto-detected — see detectClientApi):
+//  - legacy: clients nested in the inbound, mutated via /panel/api/inbounds/*
+//    (addClient/updateClient/...). Works on v2.x and older v3 panels.
+//  - clients: newer builds REMOVED those routes and expose clients as
+//    first-class entities under /panel/api/clients/* (keyed by email).
+// Read-only inbound routes (/panel/api/inbounds/list|get) exist on both.
 // Key gotchas handled here (verified against 3x-ui source):
 //  - `settings`/`streamSettings` on inbounds are JSON-encoded STRINGS → parse/stringify
 //  - HTTP 200 with {success:false} for logical errors; 404 when unauthenticated
-//  - addClient body: { id: inboundId, settings: "<json string with clients[]>" }
-//  - updateClient is a FULL REPLACE keyed by client uuid in the path
+//  - legacy addClient body: { id: inboundId, settings: "<json with clients[]>" }
+//  - legacy updateClient is a FULL REPLACE keyed by client uuid in the path
+//  - clients API keys by email; uuid/subId are generated server-side, read back
 //  - totalGB is BYTES; expiryTime is epoch MILLISECONDS (negative = start on first use)
-//  - email is panel-globally unique; uuid + subId must be generated client-side
+//  - email is panel-globally unique
 
 import { randomUUID } from "crypto";
 import { Agent, fetch as undiciFetch } from "undici";
@@ -22,7 +28,9 @@ export interface XuiConfig {
 }
 
 export interface XuiClient {
-  id: string; // uuid
+  id: string; // legacy API: this IS the VLESS uuid. clients API: numeric DB id (see uuid)
+  /** clients API only: the VLESS uuid, separate from the numeric id */
+  uuid?: string;
   flow: string;
   email: string;
   limitIp: number;
@@ -86,6 +94,15 @@ export function gbToBytes(gb: number): number {
   return gb <= 0 ? 0 : Math.round(gb * 1024 ** 3);
 }
 
+/**
+ * Parse an inbound's settings/streamSettings field. Legacy panels return these
+ * as JSON-encoded STRINGS; newer (clients-API) panels return nested OBJECTS.
+ * Accept either so we work across versions.
+ */
+export function parseInboundJson<T>(field: unknown): T {
+  return typeof field === "string" ? (JSON.parse(field) as T) : (field as T);
+}
+
 /** Serialize async panel writes so we never race addClient/updateClient calls. */
 class Mutex {
   private chain: Promise<void> = Promise.resolve();
@@ -106,6 +123,9 @@ export class XuiApi {
   private loginPromise: Promise<void> | null = null;
   private writeMutex = new Mutex();
   private dispatcher?: Agent;
+  /** Which client API the panel speaks: probed once, then cached. */
+  private clientApi: "legacy" | "clients" | null = null;
+  private clientApiProbe: Promise<"legacy" | "clients"> | null = null;
 
   constructor(private cfg: XuiConfig) {
     if (cfg.insecureTls) {
@@ -247,6 +267,47 @@ export class XuiApi {
     return this.request<Inbound>(`/panel/api/inbounds/get/${id}`);
   }
 
+  // ── Client-API detection ──
+  /**
+   * Newer 3x-ui builds dropped /panel/api/inbounds/addClient and expose clients
+   * under /panel/api/clients/*. Probe once (authenticated) and cache: a real
+   * envelope from /panel/api/clients/list ⇒ "clients"; a 404 ⇒ legacy inbounds API.
+   */
+  /** Public: which client API the panel speaks (for diagnostics). */
+  whichClientApi(): Promise<"legacy" | "clients"> {
+    return this.detectClientApi();
+  }
+
+  private detectClientApi(): Promise<"legacy" | "clients"> {
+    if (this.clientApi) return Promise.resolve(this.clientApi);
+    if (this.clientApiProbe) return this.clientApiProbe;
+    this.clientApiProbe = (async () => {
+      const status = await this.probeStatus("/panel/api/clients/list");
+      // 200 (route exists) ⇒ clients API; 404 ⇒ old inbound-scoped API.
+      this.clientApi = status === 404 ? "legacy" : "clients";
+      return this.clientApi;
+    })().finally(() => {
+      this.clientApiProbe = null;
+    });
+    return this.clientApiProbe;
+  }
+
+  /**
+   * Authenticated GET that returns only the HTTP status (re-logging in once on
+   * an auth-shaped 404/401/403), used to tell "route missing" from "not logged in".
+   */
+  private async probeStatus(p: string): Promise<number> {
+    if (!this.cfg.token && !this.cookies.size) await this.login();
+    let res = await this.rawFetch(p);
+    if ((res.status === 404 || res.status === 401 || res.status === 403) && !this.cfg.token) {
+      this.cookies.clear();
+      this.csrfToken = null;
+      await this.login();
+      res = await this.rawFetch(p);
+    }
+    return res.status;
+  }
+
   // ── Clients ──
   /** Add a client to an inbound. Generates uuid/subId if not supplied. */
   addClient(
@@ -269,9 +330,21 @@ export class XuiApi {
       reset: client.reset ?? 0,
     };
     return this.writeMutex.run(async () => {
+      if ((await this.detectClientApi()) === "clients") {
+        // clients API: { client: {...}, inboundIds: [id] }. uuid/subId are honored
+        // when supplied (fields are writable); read them back to be safe.
+        await this.request("/panel/api/clients/add", {
+          method: "POST",
+          body: { client: full, inboundIds: [inboundId] },
+        });
+        // Read back: the clients API separates uuid (VLESS id) from numeric id,
+        // and generates uuid/subId server-side when omitted. Prefer the read value.
+        const saved = await this.getClientByEmail(client.email);
+        return { uuid: saved?.uuid ?? saved?.id ?? uuid, subId: saved?.subId ?? subId };
+      }
       await this.request("/panel/api/inbounds/addClient", {
         method: "POST",
-        // NOTE: settings must be a JSON-encoded STRING (v2 API quirk)
+        // NOTE: settings must be a JSON-encoded STRING (legacy API quirk)
         body: { id: inboundId, settings: JSON.stringify({ clients: [full] }) },
       });
       return { uuid, subId };
@@ -282,10 +355,18 @@ export class XuiApi {
   updateClient(inboundId: number, uuid: string, patch: Partial<XuiClient>): Promise<XuiClient> {
     return this.writeMutex.run(async () => {
       const inbound = await this.getInbound(inboundId);
-      const settings = JSON.parse(inbound.settings) as { clients: XuiClient[] };
-      const existing = settings.clients.find((c) => c.id === uuid);
+      const settings = parseInboundJson<{ clients: XuiClient[] }>(inbound.settings);
+      const existing = settings.clients.find((c) => c.id === uuid || c.uuid === uuid);
       if (!existing) throw new XuiError(`کلاینت ${uuid} در اینباند ${inboundId} یافت نشد`);
       const updated: XuiClient = { ...existing, ...patch, id: patch.id ?? existing.id };
+      if ((await this.detectClientApi()) === "clients") {
+        // clients API keys by email; body is the flat client object.
+        await this.request(`/panel/api/clients/update/${encodeURIComponent(updated.email)}`, {
+          method: "POST",
+          body: updated,
+        });
+        return updated;
+      }
       await this.request(`/panel/api/inbounds/updateClient/${uuid}`, {
         method: "POST",
         body: { id: inboundId, settings: JSON.stringify({ clients: [updated] }) },
@@ -301,27 +382,53 @@ export class XuiApi {
 
   deleteClient(inboundId: number, uuid: string): Promise<void> {
     return this.writeMutex.run(async () => {
+      if ((await this.detectClientApi()) === "clients") {
+        // clients API deletes by email — resolve it from the inbound first.
+        const inbound = await this.getInbound(inboundId);
+        const settings = parseInboundJson<{ clients: XuiClient[] }>(inbound.settings);
+        const target = settings.clients.find((c) => c.id === uuid || c.uuid === uuid);
+        if (!target) return; // already gone
+        await this.request(`/panel/api/clients/del/${encodeURIComponent(target.email)}`, {
+          method: "POST",
+        });
+        return;
+      }
       await this.request(`/panel/api/inbounds/${inboundId}/delClient/${uuid}`, { method: "POST" });
     });
   }
 
   resetClientTraffic(inboundId: number, email: string): Promise<void> {
     return this.writeMutex.run(async () => {
+      if ((await this.detectClientApi()) === "clients") {
+        await this.request(`/panel/api/clients/resetTraffic/${encodeURIComponent(email)}`, {
+          method: "POST",
+        });
+        return;
+      }
       await this.request(`/panel/api/inbounds/${inboundId}/resetClientTraffic/${encodeURIComponent(email)}`, {
         method: "POST",
       });
     });
   }
 
-  getClientTraffic(email: string): Promise<ClientTraffic | null> {
+  /** Full client record by email (clients API only — used to read back uuid/subId). */
+  private getClientByEmail(email: string): Promise<XuiClient | null> {
+    return this.request<XuiClient | null>(`/panel/api/clients/get/${encodeURIComponent(email)}`);
+  }
+
+  async getClientTraffic(email: string): Promise<ClientTraffic | null> {
+    if ((await this.detectClientApi()) === "clients") {
+      return this.request<ClientTraffic | null>(`/panel/api/clients/traffic/${encodeURIComponent(email)}`);
+    }
     return this.request<ClientTraffic | null>(
       `/panel/api/inbounds/getClientTraffics/${encodeURIComponent(email)}`,
     );
   }
 
   /** Emails of currently-connected clients. */
-  getOnlines(): Promise<string[]> {
-    return this.request<string[]>("/panel/api/inbounds/onlines", { method: "POST" });
+  async getOnlines(): Promise<string[]> {
+    const base = (await this.detectClientApi()) === "clients" ? "/panel/api/clients" : "/panel/api/inbounds";
+    return this.request<string[]>(`${base}/onlines`, { method: "POST" });
   }
 }
 
@@ -355,7 +462,7 @@ export function buildVlessLink(
   publicHost: string,
   flow?: string,
 ): string {
-  const ss = JSON.parse(inbound.streamSettings) as StreamSettings;
+  const ss = parseInboundJson<StreamSettings>(inbound.streamSettings);
   const params = new URLSearchParams();
   params.set("type", ss.network || "tcp");
   params.set("security", ss.security || "none");

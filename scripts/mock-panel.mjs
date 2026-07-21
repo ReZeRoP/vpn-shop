@@ -13,6 +13,11 @@ import { createServer } from "http";
 const BASE = "/mock";
 const V3 = process.env.MOCK_V3 === "1";
 const API_TOKEN = process.env.MOCK_TOKEN || "";
+// MOCK_CLIENTS_API=1 → emulate newer panels: the old /panel/api/inbounds/addClient
+// (and sibling client-mutation routes) are GONE (404); clients live under
+// /panel/api/clients/*, and inbound settings are returned as nested OBJECTS.
+const CLIENTS_API = process.env.MOCK_CLIENTS_API === "1";
+let clientIdSeq = 100;
 let sessionCounter = 0;
 const sessions = new Set();
 const csrfTokens = new Set();
@@ -121,12 +126,102 @@ createServer(async (req, res) => {
     return;
   }
 
+  // Newer panels return settings/streamSettings as nested objects, not strings.
+  const shapeInbound = (ib) =>
+    CLIENTS_API
+      ? { ...ib, settings: JSON.parse(ib.settings), streamSettings: JSON.parse(ib.streamSettings) }
+      : ib;
+
   if (url === `${BASE}/panel/api/inbounds/list`) {
-    return json(res, 200, { success: true, msg: "", obj: [inbound] });
+    return json(res, 200, { success: true, msg: "", obj: [shapeInbound(inbound)] });
   }
   if (url === `${BASE}/panel/api/inbounds/get/1`) {
-    return json(res, 200, { success: true, msg: "", obj: inbound });
+    return json(res, 200, { success: true, msg: "", obj: shapeInbound(inbound) });
   }
+
+  // ── Clients API (newer panels) ──
+  if (CLIENTS_API) {
+    if (url === `${BASE}/panel/api/clients/list`) {
+      const clients = JSON.parse(inbound.settings).clients;
+      return json(res, 200, { success: true, msg: "", obj: clients });
+    }
+    if (url === `${BASE}/panel/api/clients/add` && req.method === "POST") {
+      const body = await readBody(req);
+      const c = body.client;
+      const existing = JSON.parse(inbound.settings);
+      if (existing.clients.some((e) => e.email === c.email)) {
+        return json(res, 200, { success: false, msg: "Duplicate email", obj: null });
+      }
+      // server assigns numeric id; keeps uuid (client `id`) + subId
+      existing.clients.push({ ...c, dbId: ++clientIdSeq });
+      inbound.settings = JSON.stringify(existing);
+      console.log(`[mock-panel] (clients API) client added: ${c.email} inboundIds=${body.inboundIds}`);
+      return json(res, 200, { success: true, msg: "Client added", obj: null });
+    }
+    const cget = url.match(new RegExp(`^${BASE}/panel/api/clients/get/(.+)$`));
+    if (cget && req.method === "GET") {
+      const email = decodeURIComponent(cget[1]);
+      const c = JSON.parse(inbound.settings).clients.find((x) => x.email === email);
+      if (!c) return json(res, 200, { success: true, msg: "", obj: null });
+      // clients API separates numeric id from the VLESS uuid (which is client.id here)
+      return json(res, 200, {
+        success: true,
+        msg: "",
+        obj: { ...c, id: c.dbId ?? 1, uuid: c.id, subId: c.subId },
+      });
+    }
+    const cupd = url.match(new RegExp(`^${BASE}/panel/api/clients/update/(.+)$`));
+    if (cupd && req.method === "POST") {
+      const email = decodeURIComponent(cupd[1]);
+      const body = await readBody(req);
+      const existing = JSON.parse(inbound.settings);
+      const idx = existing.clients.findIndex((c) => c.email === email);
+      if (idx === -1) return json(res, 200, { success: false, msg: "client not found", obj: null });
+      existing.clients[idx] = { ...existing.clients[idx], ...body };
+      inbound.settings = JSON.stringify(existing);
+      console.log(`[mock-panel] (clients API) client updated: ${email} enable=${body.enable}`);
+      return json(res, 200, { success: true, msg: "Client updated", obj: null });
+    }
+    const cdel = url.match(new RegExp(`^${BASE}/panel/api/clients/del/(.+)$`));
+    if (cdel && req.method === "POST") {
+      const email = decodeURIComponent(cdel[1]);
+      const existing = JSON.parse(inbound.settings);
+      existing.clients = existing.clients.filter((c) => c.email !== email);
+      inbound.settings = JSON.stringify(existing);
+      console.log(`[mock-panel] (clients API) client deleted: ${email}`);
+      return json(res, 200, { success: true, msg: "Client deleted", obj: null });
+    }
+    const ctraf = url.match(new RegExp(`^${BASE}/panel/api/clients/traffic/(.+)$`));
+    if (ctraf && req.method === "GET") {
+      const email = decodeURIComponent(ctraf[1]);
+      const c = JSON.parse(inbound.settings).clients.find((x) => x.email === email);
+      if (!c) return json(res, 200, { success: true, msg: "", obj: null });
+      return json(res, 200, {
+        success: true,
+        msg: "",
+        obj: {
+          id: c.dbId ?? 1, inboundId: 1, enable: c.enable, email,
+          up: 123 * 1024 ** 2, down: 456 * 1024 ** 2,
+          total: c.totalGB, expiryTime: c.expiryTime, reset: 0,
+        },
+      });
+    }
+    if (url === `${BASE}/panel/api/clients/onlines` && req.method === "POST") {
+      return json(res, 200, { success: true, msg: "", obj: [] });
+    }
+    // On newer panels the old inbound-scoped client routes are GONE → 404.
+    if (/\/panel\/api\/inbounds\/(addClient|updateClient|delClient|resetClientTraffic|getClientTraffics|onlines)/.test(url)) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ success: false, msg: "not found", obj: null }));
+    }
+  }
+
+  // The clients-API probe hits this on legacy panels → 404 (route absent).
+  if (!CLIENTS_API && url === `${BASE}/panel/api/clients/list`) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ success: false, msg: "not found", obj: null }));
+  }
+
   if (url === `${BASE}/panel/api/inbounds/addClient` && req.method === "POST") {
     const body = await readBody(req);
     if (typeof body.settings !== "string") {
@@ -176,6 +271,19 @@ createServer(async (req, res) => {
         reset: 0,
       },
     });
+  }
+  const del = url.match(new RegExp(`^${BASE}/panel/api/inbounds/\\d+/delClient/(.+)$`));
+  if (del && req.method === "POST") {
+    const uuid = decodeURIComponent(del[1]);
+    const existing = JSON.parse(inbound.settings);
+    existing.clients = existing.clients.filter((c) => c.id !== uuid);
+    inbound.settings = JSON.stringify(existing);
+    console.log(`[mock-panel] client deleted: ${uuid}`);
+    return json(res, 200, { success: true, msg: "deleted", obj: null });
+  }
+  const rst = url.match(new RegExp(`^${BASE}/panel/api/inbounds/\\d+/resetClientTraffic/(.+)$`));
+  if (rst && req.method === "POST") {
+    return json(res, 200, { success: true, msg: "reset", obj: null });
   }
   if (url === `${BASE}/panel/api/inbounds/onlines` && req.method === "POST") {
     return json(res, 200, { success: true, msg: "", obj: [] });
